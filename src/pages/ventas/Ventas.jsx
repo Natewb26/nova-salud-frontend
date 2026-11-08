@@ -1,306 +1,264 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
-  ShoppingCart, Plus, Trash2, RefreshCw, Search, Package, Users,
-  CalendarDays, AlertCircle, LoaderCircle, X, Save, ClipboardList,
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
+import {
+  AlertCircle,
+  Barcode,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  LoaderCircle,
+  Package,
+  RefreshCw,
+  Search,
+  ShoppingCart,
+  Trash2,
   UserRound,
+  X,
 } from 'lucide-react'
-
+import { useAuth } from '../../context/useAuth'
+import { getErrorMessage } from '../../services/apiErrors'
+import { PAYMENT_METHODS } from '../../services/paymentService'
 import {
-  getSalesCustomers,
-  getSalesProducts,
-  getSalesHistory,
+  cancelSale,
   createSale,
+  getProductByBarcode,
+  getSales,
+  getSalesCustomers,
+  getSalesProduct,
+  getSalesProducts,
 } from '../../services/salesService'
+import {
+  CancelSaleModal,
+  SaleDetailModal,
+  SaleReceiptModal,
+} from './SaleModals'
 
-let itemSequence = 0
-
-const createEmptyItem = () => ({
-  _key: ++itemSequence,
-  id_producto: '',
-  cantidad: '1',
+const PAGE_SIZE = 20
+const money = new Intl.NumberFormat('es-PE', {
+  style: 'currency',
+  currency: 'PEN',
 })
 
-const currency = (value) =>
-  new Intl.NumberFormat('es-PE', {
-    style: 'currency',
-    currency: 'PEN',
-  }).format(Number(value) || 0)
-
-const normalizeText = (value) =>
-  String(value ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-
-const getProductId = (product) =>
-  product?.id_producto ?? product?.id
-
-const getProductName = (product) =>
-  product?.nombre ?? product?.name ?? 'Producto sin nombre'
-
-const getProductStock = (product) =>
-  Math.max(0, Number(product?.stock) || 0)
-
-const getProductPrice = (product) =>
-  Number(product?.precio_venta ?? product?.price ?? 0)
-
-const getCustomerName = (sale, customers) => {
-  if (sale.nombre_contacto) return sale.nombre_contacto
-
-  const customer = customers.find(
-    (item) =>
-      Number(item.id_contacto) === Number(sale.id_contacto),
-  )
-
-  return customer?.nombre ?? (
-    sale.id_contacto
-      ? `Cliente #${sale.id_contacto}`
-      : 'Venta sin cliente'
-  )
-}
+const productId = (product) => product.id_producto ?? product.id
+const productName = (product) => product.nombre ?? product.name ?? 'Producto'
+const productStock = (product) => Number(product.stock_disponible ?? product.stock ?? 0)
+const productPrice = (product) => Number(product.precio_venta ?? product.price ?? 0)
+const customerId = (customer) => customer.id_contacto ?? customer.id
+const saleId = (sale) => sale.id_venta ?? sale.id_operacion ?? sale.id
 
 const formatDate = (value) => {
-  if (!value) return 'No registrada'
-
-  const dateOnly = String(value).match(/^\d{4}-\d{2}-\d{2}$/)
-
-  const date = dateOnly
-    ? new Date(`${value}T12:00:00`)
-    : new Date(value)
-
-  if (Number.isNaN(date.getTime())) return String(value)
-
-  return date.toLocaleDateString('es-PE')
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('es-PE')
 }
 
 export default function Ventas() {
-  const [customers, setCustomers] = useState([])
-  const [products, setProducts] = useState([])
-  const [sales, setSales] = useState([])
-
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-
-  const [customerId, setCustomerId] = useState('')
+  const { hasRole } = useAuth()
+  const isAdmin = hasRole('admin')
+  const queryClient = useQueryClient()
+  const [productSearch, setProductSearch] = useState('')
+  const debouncedProductSearch = useDebouncedValue(productSearch, 300)
+  const [barcode, setBarcode] = useState('')
+  const [customerSearch, setCustomerSearch] = useState('')
+  const debouncedCustomerSearch = useDebouncedValue(customerSearch, 300)
+  const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [paymentMethod, setPaymentMethod] = useState('efectivo')
-  const [items, setItems] = useState(() => [createEmptyItem()])
-  const [search, setSearch] = useState('')
+  const [cart, setCart] = useState([])
+  const [saleError, setSaleError] = useState('')
+  const [receipt, setReceipt] = useState(null)
+  const [historyFilters, setHistoryFilters] = useState({ desde: '', hasta: '', estado: '' })
+  const [historyPage, setHistoryPage] = useState(1)
+  const [detailSaleId, setDetailSaleId] = useState(null)
+  const [saleToCancel, setSaleToCancel] = useState(null)
 
-  const loadData = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  const productsQuery = useQuery({
+    queryKey: ['productos', 'venta', debouncedProductSearch],
+    queryFn: () => getSalesProducts({
+      search: debouncedProductSearch,
+      page: 1,
+      page_size: 10,
+      sort: 'nombre',
+    }),
+  })
+  const customersQuery = useQuery({
+    queryKey: ['contactos', 'venta', debouncedCustomerSearch],
+    queryFn: () => getSalesCustomers({
+      search: debouncedCustomerSearch,
+      page: 1,
+      page_size: 10,
+      sort: 'nombre',
+    }),
+  })
+  const historyParams = {
+    page: historyPage,
+    page_size: PAGE_SIZE,
+    sort: '-fecha',
+    ...(historyFilters.desde ? { desde: historyFilters.desde } : {}),
+    ...(historyFilters.hasta ? { hasta: historyFilters.hasta } : {}),
+    ...(historyFilters.estado ? { estado: historyFilters.estado } : {}),
+  }
+  const salesQuery = useQuery({
+    queryKey: ['ventas', historyParams],
+    queryFn: () => getSales(historyParams),
+    placeholderData: keepPreviousData,
+  })
 
-    try {
-      const [customerData, productData, salesData] =
-        await Promise.all([
-          getSalesCustomers(),
-          getSalesProducts(),
-          getSalesHistory(),
-        ])
-
-      setCustomers(customerData)
-      setProducts(productData)
-      setSales(salesData)
-    } catch (err) {
-      setError(
-        err.response?.data?.error ||
-          err.message ||
-          'No se pudieron cargar los datos de ventas.',
-      )
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    let active = true
-
-    Promise.all([
-      getSalesCustomers(),
-      getSalesProducts(),
-      getSalesHistory(),
+  const invalidateSaleData = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['productos'] }),
+      queryClient.invalidateQueries({ queryKey: ['alertas'] }),
+      queryClient.invalidateQueries({ queryKey: ['ventas'] }),
     ])
-      .then(([customerData, productData, salesData]) => {
-        if (!active) return
+  }
+  const createMutation = useMutation({
+    mutationFn: createSale,
+    onSuccess: invalidateSaleData,
+  })
+  const cancelMutation = useMutation({
+    mutationFn: ({ id, reason }) => cancelSale(id, reason),
+    onSuccess: async (_, variables) => {
+      await invalidateSaleData()
+      await queryClient.invalidateQueries({ queryKey: ['venta', variables.id] })
+    },
+  })
+  const barcodeMutation = useMutation({ mutationFn: getProductByBarcode })
 
-        setCustomers(customerData)
-        setProducts(productData)
-        setSales(salesData)
-        setError('')
-      })
-      .catch((err) => {
-        if (!active) return
+  const products = productsQuery.data?.data ?? []
+  const customers = customersQuery.data?.data ?? []
+  const sales = salesQuery.data?.data ?? []
+  const salesMeta = salesQuery.data?.meta ?? {
+    page: historyPage,
+    total: 0,
+    total_pages: 1,
+  }
 
-        setError(
-          err.response?.data?.error ||
-            err.message ||
-            'No se pudieron cargar los datos de ventas.',
-        )
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
-
-    return () => {
-      active = false
-    }
-  }, [])
-
-  const getSelectedProduct = (id) =>
-    products.find(
-      (product) => String(getProductId(product)) === String(id),
-    )
-
-  const getRequestedQuantity = (productId) =>
-    items.reduce((sum, item) => (
-      String(item.id_producto) === String(productId)
-        ? sum + (Number(item.cantidad) || 0)
-        : sum
-    ), 0)
-
-  const total = useMemo(
-    () =>
-      items.reduce((sum, item) => {
-        const product = products.find(
-          (candidate) =>
-            String(getProductId(candidate)) === String(item.id_producto),
-        )
-
-        return sum + (
-          (Number(item.cantidad) || 0) * getProductPrice(product)
-        )
-      }, 0),
-    [items, products],
+  const totalPreview = useMemo(
+    () => cart.reduce(
+      (sum, item) => sum + item.cantidad * productPrice(item.product),
+      0,
+    ),
+    [cart],
   )
+  const cartHasInvalidStock = cart.some((item) => {
+    const available = productStock(item.product)
+    return item.cantidad < 1 || item.cantidad > available
+  })
 
-  const filteredSales = useMemo(() => {
-    const term = normalizeText(search)
+  const addProduct = (product) => {
+    const id = productId(product)
+    const available = productStock(product)
 
-    if (!term) return sales
+    if (available <= 0) {
+      setSaleError(`${productName(product)} no tiene stock disponible`)
+      return
+    }
 
-    return sales.filter((sale) => {
-      const customerName = getCustomerName(sale, customers)
-
-      return [
-        sale.id_operacion,
-        sale.id_contacto,
-        sale.fecha,
-        sale.total,
-        sale.estado,
-        sale.nombre_contacto,
-        customerName,
-        sale.metodo_pago,
-      ].some((value) => normalizeText(value).includes(term))
+    setSaleError('')
+    setCart((current) => {
+      const existing = current.find((item) => String(productId(item.product)) === String(id))
+      if (!existing) return [...current, { product, cantidad: 1 }]
+      return current.map((item) =>
+        String(productId(item.product)) === String(id)
+          ? { ...item, cantidad: Math.min(available, item.cantidad + 1) }
+          : item,
+      )
     })
-  }, [sales, customers, search])
+    setProductSearch('')
+  }
 
-  const updateItem = (key, field, value) => {
-    setItems((current) =>
-      current.map((item) =>
-        item._key === key ? { ...item, [field]: value } : item,
-      ),
+  const changeQuantity = (id, value) => {
+    setCart((current) => current.map((item) => {
+      if (String(productId(item.product)) !== String(id)) return item
+      const available = productStock(item.product)
+      const quantity = available > 0
+        ? Math.max(1, Math.min(available, Number(value) || 1))
+        : 0
+      return { ...item, cantidad: quantity }
+    }))
+  }
+
+  const refreshCartStock = async () => {
+    const refreshed = await Promise.all(
+      cart.map((item) => getSalesProduct(productId(item.product))),
     )
+    setCart((current) => current.map((item) => {
+      const product = refreshed.find(
+        (candidate) => candidate && String(productId(candidate)) === String(productId(item.product)),
+      )
+      if (!product) return item
+      return {
+        ...item,
+        product,
+        cantidad: Math.min(item.cantidad, productStock(product)),
+      }
+    }))
   }
 
-  const addItem = () => {
-    setItems((current) => [...current, createEmptyItem()])
-  }
-
-  const removeItem = (key) => {
-    setItems((current) =>
-      current.length === 1
-        ? current
-        : current.filter((item) => item._key !== key),
-    )
-  }
-
-  const handleSubmit = async (event) => {
+  const handleBarcode = async (event) => {
     event.preventDefault()
+    const normalized = barcode.trim()
+    if (!normalized) return
 
-    if (saving) return
-
-    setError('')
-    setSuccess('')
-
-    if (!items.length) {
-      setError('Agrega al menos un producto a la venta.')
-      return
-    }
-
-    const invalidItem = items.some(
-      (item) =>
-        !item.id_producto ||
-        !Number.isInteger(Number(item.cantidad)) ||
-        Number(item.cantidad) <= 0 ||
-        !getSelectedProduct(item.id_producto),
-    )
-
-    if (invalidItem) {
-      setError(
-        'Selecciona productos válidos e ingresa cantidades enteras mayores que cero.',
-      )
-      return
-    }
-
-    const requestedByProduct = new Map()
-
-    items.forEach((item) => {
-      const id = String(item.id_producto)
-      requestedByProduct.set(
-        id,
-        (requestedByProduct.get(id) ?? 0) + Number(item.cantidad),
-      )
-    })
-
-    for (const [id, requested] of requestedByProduct) {
-      const product = getSelectedProduct(id)
-      const available = getProductStock(product)
-
-      if (requested > available) {
-        setError(
-          `Stock insuficiente para ${getProductName(product)}. Solicitado: ${requested}. Disponible: ${available}.`,
-        )
+    setSaleError('')
+    try {
+      const product = await barcodeMutation.mutateAsync(normalized)
+      if (!product) {
+        setSaleError('No se encontró un producto con ese código de barras')
         return
       }
+      addProduct(product)
+      setBarcode('')
+    } catch (error) {
+      setSaleError(getErrorMessage(error))
+    }
+  }
+
+  const handleSale = async (event) => {
+    event.preventDefault()
+    if (cart.length === 0) {
+      setSaleError('Agrega al menos un producto al carrito')
+      return
+    }
+    if (cartHasInvalidStock) {
+      setSaleError('Actualiza las cantidades: uno o más productos no tienen stock suficiente')
+      return
     }
 
     const payload = {
-      items: items.map((item) => ({
-        id_producto: Number(item.id_producto),
-        cantidad: Number(item.cantidad),
-      })),
-      id_contacto: customerId ? Number(customerId) : null,
+      ...(selectedCustomer ? { id_contacto: Number(customerId(selectedCustomer)) } : {}),
       metodo_pago: paymentMethod,
+      items: cart.map((item) => ({
+        id_producto: Number(productId(item.product)),
+        cantidad: item.cantidad,
+      })),
     }
 
-    setSaving(true)
-
+    setSaleError('')
     try {
-      const result = await createSale(payload)
-
-      setSuccess(
-        `Venta registrada correctamente. Operación: ${
-          result.resultado ?? 'confirmada'
-        }.`,
-      )
-
-      setCustomerId('')
+      const created = await createMutation.mutateAsync(payload)
+      setReceipt(created)
+      setCart([])
+      setSelectedCustomer(null)
+      setCustomerSearch('')
       setPaymentMethod('efectivo')
-      setItems([createEmptyItem()])
-
-      await loadData()
-    } catch (err) {
-      setError(
-        err.response?.data?.error ||
-          err.message ||
-          'No se pudo registrar la venta.',
-      )
-    } finally {
-      setSaving(false)
+    } catch (error) {
+      const code = error.response?.data?.error?.code
+      setSaleError(getErrorMessage(error))
+      if (error.response?.status === 409 && code === 'STOCK_INSUFICIENTE') {
+        await queryClient.invalidateQueries({ queryKey: ['productos'] })
+        await refreshCartStock()
+      }
     }
+  }
+
+  const updateHistoryFilter = (field, value) => {
+    setHistoryFilters((current) => ({ ...current, [field]: value }))
+    setHistoryPage(1)
   }
 
   return (
@@ -308,438 +266,155 @@ export default function Ventas() {
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Ventas</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Registra las ventas de productos y administra su historial.
-          </p>
+          <p className="mt-1 text-sm text-slate-500">Registra ventas y consulta su historial.</p>
         </div>
-
-        <button
-          type="button"
-          onClick={loadData}
-          disabled={loading || saving}
-          className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-        >
-          <RefreshCw size={17} className={loading ? 'animate-spin' : ''} />
+        <button type="button" onClick={() => Promise.all([productsQuery.refetch(), customersQuery.refetch(), salesQuery.refetch()])} disabled={productsQuery.isFetching || salesQuery.isFetching} className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+          <RefreshCw size={17} className={productsQuery.isFetching || salesQuery.isFetching ? 'animate-spin' : ''} />
           Actualizar información
         </button>
       </div>
 
-      {error && (
+      {saleError && (
         <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           <AlertCircle size={19} className="mt-0.5 shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button
-            type="button"
-            onClick={() => setError('')}
-            aria-label="Cerrar mensaje"
-          >
-            <X size={17} />
+          <span className="flex-1">{saleError}</span>
+          <button type="button" onClick={() => setSaleError('')} aria-label="Cerrar"><X size={17} /></button>
+        </div>
+      )}
+
+      <form onSubmit={handleSale} className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
+        <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+          <div className="rounded-lg bg-teal-50 p-2.5 text-teal-700"><ShoppingCart size={21} /></div>
+          <div><h2 className="font-bold text-slate-800">Nueva venta</h2><p className="text-sm text-slate-500">Selecciona productos y confirma la operación.</p></div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="relative">
+            <label className="mb-2 block text-sm font-medium text-slate-700">Buscar producto</label>
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 focus-within:border-teal-500">
+              <Search size={18} className="text-slate-400" />
+              <input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Nombre o código..." className="w-full py-3 text-sm outline-none" />
+            </div>
+            {productSearch && (
+              <SearchResults loading={productsQuery.isFetching} empty={products.length === 0}>
+                {products.map((product) => (
+                  <button key={productId(product)} type="button" onClick={() => addProduct(product)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50">
+                    <span><span className="block text-sm font-semibold text-slate-800">{productName(product)}</span><span className="text-xs text-slate-400">{product.codigo_barras}</span></span>
+                    <span className="text-xs font-semibold text-slate-500">Stock: {productStock(product)}</span>
+                  </button>
+                ))}
+              </SearchResults>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Código de barras</label>
+            <div className="flex gap-2">
+              <div className="flex flex-1 items-center gap-2 rounded-xl border border-slate-200 px-3 focus-within:border-teal-500">
+                <Barcode size={18} className="text-slate-400" />
+                <input value={barcode} onChange={(event) => setBarcode(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') handleBarcode(event) }} placeholder="Escanea o escribe el código" className="w-full py-3 text-sm outline-none" />
+              </div>
+              {barcodeMutation.isPending && <LoaderCircle size={20} className="mt-3 animate-spin text-teal-600" />}
+            </div>
+          </div>
+
+          <div className="relative">
+            <label className="mb-2 block text-sm font-medium text-slate-700">Cliente opcional</label>
+            {selectedCustomer ? (
+              <div className="flex items-center justify-between rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800">
+                <span>{selectedCustomer.nombre}</span>
+                <button type="button" onClick={() => setSelectedCustomer(null)} aria-label="Quitar cliente"><X size={17} /></button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 focus-within:border-teal-500">
+                <UserRound size={18} className="text-slate-400" />
+                <input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Buscar por nombre o documento..." className="w-full py-3 text-sm outline-none" />
+              </div>
+            )}
+            {!selectedCustomer && customerSearch && (
+              <SearchResults loading={customersQuery.isFetching} empty={customers.length === 0}>
+                {customers.map((customer) => (
+                  <button key={customerId(customer)} type="button" onClick={() => { setSelectedCustomer(customer); setCustomerSearch('') }} className="block w-full px-4 py-3 text-left hover:bg-slate-50">
+                    <span className="block text-sm font-semibold text-slate-800">{customer.nombre}</span><span className="text-xs text-slate-400">{customer.documento || 'Sin documento'}</span>
+                  </button>
+                ))}
+              </SearchResults>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Método de pago</label>
+            <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm capitalize outline-none focus:border-teal-500">
+              {PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
+          <table className="w-full min-w-175 text-left text-sm">
+            <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Producto</th><th className="px-4 py-3">Precio referencial</th><th className="px-4 py-3">Cantidad</th><th className="px-4 py-3">Subtotal</th><th className="px-4 py-3"></th></tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {cart.map((item) => (
+                <tr key={productId(item.product)}>
+                  <td className="px-4 py-3"><p className="font-semibold text-slate-800">{productName(item.product)}</p><p className="text-xs text-slate-400">Disponible: {productStock(item.product)}</p></td>
+                  <td className="px-4 py-3 text-slate-600">{money.format(productPrice(item.product))}</td>
+                  <td className="px-4 py-3"><input type="number" min={productStock(item.product) > 0 ? 1 : 0} max={productStock(item.product)} value={item.cantidad} disabled={productStock(item.product) <= 0} onChange={(event) => changeQuantity(productId(item.product), event.target.value)} className="w-20 rounded-lg border border-slate-200 px-3 py-2 disabled:bg-slate-50 disabled:text-red-500" /></td>
+                  <td className="px-4 py-3 font-medium text-slate-700">{money.format(item.cantidad * productPrice(item.product))}</td>
+                  <td className="px-4 py-3 text-right"><button type="button" onClick={() => setCart((current) => current.filter((entry) => productId(entry.product) !== productId(item.product)))} className="rounded-lg p-2 text-red-500 hover:bg-red-50" aria-label="Quitar producto"><Trash2 size={17} /></button></td>
+                </tr>
+              ))}
+              {cart.length === 0 && <tr><td colSpan="5" className="px-5 py-10 text-center text-sm text-slate-400"><Package size={30} className="mx-auto mb-2 text-slate-300" />Agrega productos al carrito.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex flex-col items-end justify-between gap-4 border-t border-slate-100 pt-5 sm:flex-row sm:items-center">
+          <div><p className="text-xs text-slate-400">Total referencial</p><p className="text-2xl font-bold text-slate-800">{money.format(totalPreview)}</p></div>
+          <button type="submit" disabled={createMutation.isPending || cart.length === 0 || cartHasInvalidStock} className="flex items-center gap-2 rounded-xl bg-teal-600 px-6 py-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50">
+            {createMutation.isPending && <LoaderCircle size={18} className="animate-spin" />}
+            {createMutation.isPending ? 'Registrando...' : 'Confirmar venta'}
           </button>
         </div>
-      )}
-
-      {success && (
-        <div className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
-          <ShoppingCart size={19} className="mt-0.5 shrink-0" />
-          <span>{success}</span>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 bg-white p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Ventas registradas</p>
-              <p className="mt-2 text-2xl font-bold text-slate-800">
-                {sales.length}
-              </p>
-            </div>
-            <div className="rounded-xl bg-teal-50 p-3 text-teal-700">
-              <ShoppingCart size={23} />
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Clientes disponibles</p>
-              <p className="mt-2 text-2xl font-bold text-slate-800">
-                {customers.length}
-              </p>
-            </div>
-            <div className="rounded-xl bg-blue-50 p-3 text-blue-700">
-              <Users size={23} />
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Productos disponibles</p>
-              <p className="mt-2 text-2xl font-bold text-slate-800">
-                {products.length}
-              </p>
-            </div>
-            <div className="rounded-xl bg-violet-50 p-3 text-violet-700">
-              <Package size={23} />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <form
-        onSubmit={handleSubmit}
-        className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 sm:p-6"
-      >
-        <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
-          <div className="rounded-lg bg-teal-50 p-2.5 text-teal-700">
-            <Plus size={21} />
-          </div>
-          <div>
-            <h2 className="font-semibold text-slate-800">
-              Registrar nueva venta
-            </h2>
-            <p className="text-xs text-slate-500">
-              Selecciona los productos y completa los datos de la venta.
-            </p>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center gap-3 py-10 text-sm text-slate-500">
-            <LoaderCircle size={22} className="animate-spin text-teal-600" />
-            Cargando clientes y productos...
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Cliente
-                </label>
-                <select
-                  value={customerId}
-                  onChange={(event) => setCustomerId(event.target.value)}
-                  disabled={saving}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm outline-none focus:border-teal-500"
-                >
-                  <option value="">Venta sin cliente registrado</option>
-                  {customers.map((customer) => (
-                    <option
-                      key={customer.id_contacto}
-                      value={customer.id_contacto}
-                    >
-                      {customer.nombre}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-slate-400">
-                  El registro de cliente es opcional.
-                </p>
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Método de pago
-                </label>
-                <select
-                  value={paymentMethod}
-                  onChange={(event) => setPaymentMethod(event.target.value)}
-                  disabled={saving}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm outline-none focus:border-teal-500"
-                >
-                  <option value="efectivo">Efectivo</option>
-                  <option value="transferencia">Transferencia</option>
-                  <option value="tarjeta">Tarjeta</option>
-                  <option value="credito">Crédito</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-                <div>
-                  <h3 className="font-semibold text-slate-800">
-                    Productos de la venta
-                  </h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    El precio y el stock se consultan del catálogo.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={addItem}
-                  disabled={products.length === 0 || saving}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-teal-200 px-3 py-2 text-sm font-semibold text-teal-700 transition hover:bg-teal-50 disabled:opacity-50"
-                >
-                  <Plus size={17} />
-                  Agregar producto
-                </button>
-              </div>
-
-              {items.map((item, index) => {
-                const selectedProduct = getSelectedProduct(item.id_producto)
-                const unitPrice = getProductPrice(selectedProduct)
-                const available = getProductStock(selectedProduct)
-                const requested = selectedProduct
-                  ? getRequestedQuantity(item.id_producto)
-                  : 0
-                const subtotal = Number(item.cantidad) * unitPrice
-                const insufficient = requested > available
-
-                return (
-                  <div
-                    key={item._key}
-                    className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4"
-                  >
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-semibold text-slate-700">
-                        Producto {index + 1}
-                      </p>
-
-                      <button
-                        type="button"
-                        onClick={() => removeItem(item._key)}
-                        disabled={items.length === 1 || saving}
-                        title="Eliminar producto"
-                        className="rounded-lg p-2 text-red-500 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30"
-                      >
-                        <Trash2 size={17} />
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <div className="md:col-span-2">
-                        <label className="mb-2 block text-xs font-medium text-slate-600">
-                          Producto *
-                        </label>
-                        <select
-                          value={item.id_producto}
-                          onChange={(event) =>
-                            updateItem(item._key, 'id_producto', event.target.value)
-                          }
-                          required
-                          disabled={saving}
-                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-teal-500"
-                        >
-                          <option value="">Seleccionar producto</option>
-                          {products.map((product) => {
-                            const id = getProductId(product)
-                            const stock = getProductStock(product)
-
-                            return (
-                              <option
-                                key={id}
-                                value={id}
-                                disabled={stock <= 0}
-                              >
-                                {getProductName(product)}
-                              </option>
-                            )
-                          })}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-2 block text-xs font-medium text-slate-600">
-                          Cantidad *
-                        </label>
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          max={selectedProduct ? available : undefined}
-                          value={item.cantidad}
-                          onChange={(event) =>
-                            updateItem(item._key, 'cantidad', event.target.value)
-                          }
-                          required
-                          disabled={saving}
-                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-teal-500"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-2 block text-xs font-medium text-slate-600">
-                          Precio unitario
-                        </label>
-                        <div className="flex min-h-[42px] items-center rounded-lg border border-slate-200 bg-slate-100 px-3 text-sm font-semibold text-slate-700">
-                          {selectedProduct
-                            ? currency(unitPrice)
-                            : 'Selecciona un producto'}
-                        </div>
-                      </div>
-                    </div>
-
-                    {selectedProduct && (
-                      <div className={`rounded-lg border p-3 text-xs ${
-                        insufficient
-                          ? 'border-red-200 bg-red-50 text-red-700'
-                          : 'border-teal-100 bg-teal-50 text-teal-800'
-                      }`}>
-                        <div className="flex flex-wrap justify-between gap-2">
-                          <span>Stock disponible: {available} unidades</span>
-                          <span>Solicitado en el formulario: {requested}</span>
-                        </div>
-                        {insufficient && (
-                          <p className="mt-1 font-semibold">
-                            La cantidad total supera el stock disponible.
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="flex justify-end border-t border-slate-200 pt-3">
-                      <p className="text-sm text-slate-600">
-                        Subtotal:{' '}
-                        <span className="font-bold text-slate-800">
-                          {currency(subtotal)}
-                        </span>
-                      </p>
-                    </div>
-                  </div>
-                )
-              })}
-
-              {products.length === 0 && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-                  No hay productos disponibles en el catálogo. Registra
-                  productos antes de realizar una venta.
-                </div>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-4 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm text-slate-500">Total de la venta</p>
-                <p className="mt-1 text-3xl font-bold text-teal-700">
-                  {currency(total)}
-                </p>
-              </div>
-
-              <button
-                type="submit"
-                disabled={saving || loading || products.length === 0}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-teal-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {saving ? (
-                  <LoaderCircle size={18} className="animate-spin" />
-                ) : (
-                  <Save size={18} />
-                )}
-                {saving ? 'Registrando venta...' : 'Registrar venta'}
-              </button>
-            </div>
-          </>
-        )}
       </form>
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-blue-50 p-2.5 text-blue-700">
-              <ClipboardList size={21} />
-            </div>
-            <div>
-              <h2 className="font-semibold text-slate-800">
-                Historial de ventas
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Operaciones registradas en el sistema.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2">
-            <Search size={17} className="text-slate-400" />
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Buscar por operación o cliente..."
-              className="w-full min-w-0 text-sm outline-none"
-            />
-          </div>
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 p-5"><h2 className="font-bold text-slate-800">Historial de ventas</h2><p className="mt-1 text-sm text-slate-500">Consulta ventas registradas y anuladas.</p></div>
+        <div className="grid gap-3 border-b border-slate-100 p-5 sm:grid-cols-3">
+          <DateFilter label="Desde" value={historyFilters.desde} onChange={(value) => updateHistoryFilter('desde', value)} />
+          <DateFilter label="Hasta" value={historyFilters.hasta} onChange={(value) => updateHistoryFilter('hasta', value)} />
+          <div><label className="mb-1 block text-xs font-medium text-slate-500">Estado</label><select value={historyFilters.estado} onChange={(event) => updateHistoryFilter('estado', event.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm"><option value="">Todos</option><option value="registrada">Registrada</option><option value="anulada">Anulada</option></select></div>
         </div>
 
-        {loading ? (
-          <div className="flex items-center justify-center gap-3 p-10 text-sm text-slate-500">
-            <LoaderCircle size={22} className="animate-spin text-teal-600" />
-            Cargando historial...
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="px-5 py-4 font-semibold">Operación</th>
-                  <th className="px-5 py-4 font-semibold">Fecha</th>
-                  <th className="px-5 py-4 font-semibold">Cliente</th>
-                  <th className="px-5 py-4 font-semibold">Total</th>
-                  <th className="px-5 py-4 font-semibold">Estado</th>
-                </tr>
-              </thead>
-
-              <tbody className="divide-y divide-slate-100">
-                {filteredSales.map((sale) => (
-                  <tr
-                    key={sale.id_operacion}
-                    className="transition hover:bg-slate-50"
-                  >
-                    <td className="px-5 py-4 font-medium text-slate-800">
-                      #{sale.id_operacion}
-                    </td>
-                    <td className="px-5 py-4 text-slate-600">
-                      <span className="inline-flex items-center gap-2">
-                        <CalendarDays size={15} className="text-slate-400" />
-                        {formatDate(sale.fecha)}
-                      </span>
-                    </td>
-                    <td className="px-5 py-4 text-slate-600">
-                      <span className="font-medium text-slate-700">
-                        {getCustomerName(sale, customers)}
-                      </span>
-                      {sale.id_contacto && (
-                        <span className="mt-0.5 block text-xs text-slate-400">
-                          ID: {sale.id_contacto}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-5 py-4 font-semibold text-slate-800">
-                      {sale.total != null ? currency(sale.total) : '—'}
-                    </td>
-                    <td className="px-5 py-4">
-                      <span className="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700">
-                        {sale.estado || 'Registrada'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-
-                {filteredSales.length === 0 && (
-                  <tr>
-                    <td colSpan="5" className="px-5 py-12 text-center">
-                      <UserRound
-                        size={30}
-                        className="mx-auto mb-3 text-slate-300"
-                      />
-                      <p className="font-medium text-slate-600">
-                        No se encontraron ventas
-                      </p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        Las ventas registradas aparecerán en este listado.
-                      </p>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+        {salesQuery.isError ? <div className="m-5 rounded-xl bg-red-50 p-4 text-sm text-red-700">{getErrorMessage(salesQuery.error)}</div> : salesQuery.isPending ? <div className="p-10 text-center text-sm text-slate-500">Cargando ventas...</div> : (
+          <div className="overflow-x-auto"><table className="w-full min-w-175 text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-5 py-4">Venta</th><th className="px-5 py-4">Fecha</th><th className="px-5 py-4">Cliente</th><th className="px-5 py-4">Método</th><th className="px-5 py-4">Total</th><th className="px-5 py-4">Estado</th><th className="px-5 py-4"></th></tr></thead><tbody className="divide-y divide-slate-100">
+            {sales.map((sale) => <tr key={saleId(sale)} className="hover:bg-slate-50"><td className="px-5 py-4 font-semibold text-slate-800">#{saleId(sale)}</td><td className="px-5 py-4 text-slate-600">{formatDate(sale.fecha ?? sale.created_at)}</td><td className="px-5 py-4 text-slate-600">{sale.cliente?.nombre ?? sale.nombre_contacto ?? 'Cliente general'}</td><td className="px-5 py-4 capitalize text-slate-600">{sale.metodo_pago}</td><td className="px-5 py-4 font-medium text-slate-700">{money.format(Number(sale.total ?? 0))}</td><td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${String(sale.estado).toLowerCase() === 'anulada' ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>{sale.estado}</span></td><td className="px-5 py-4 text-right"><button type="button" onClick={() => setDetailSaleId(saleId(sale))} className="rounded-lg p-2 text-teal-700 hover:bg-teal-50" aria-label="Ver detalle"><Eye size={17} /></button></td></tr>)}
+            {sales.length === 0 && <tr><td colSpan="7" className="px-5 py-10 text-center text-slate-400">No se encontraron ventas.</td></tr>}
+          </tbody></table></div>
         )}
-      </div>
+
+        <div className="flex flex-col justify-between gap-3 border-t border-slate-100 px-5 py-4 text-xs text-slate-500 sm:flex-row sm:items-center"><span>Mostrando {sales.length} de {salesMeta.total} ventas</span><div className="flex items-center gap-2"><button type="button" onClick={() => setHistoryPage((current) => Math.max(1, current - 1))} disabled={salesMeta.page <= 1 || salesQuery.isFetching} className="rounded-lg border border-slate-200 p-2 disabled:opacity-40"><ChevronLeft size={16} /></button><span>Página {salesMeta.page} de {salesMeta.total_pages}</span><button type="button" onClick={() => setHistoryPage((current) => Math.min(salesMeta.total_pages, current + 1))} disabled={salesMeta.page >= salesMeta.total_pages || salesQuery.isFetching} className="rounded-lg border border-slate-200 p-2 disabled:opacity-40"><ChevronRight size={16} /></button></div></div>
+      </section>
+
+      {receipt && <SaleReceiptModal sale={receipt} onClose={() => setReceipt(null)} />}
+      {detailSaleId && <SaleDetailModal saleId={detailSaleId} isAdmin={isAdmin} onClose={() => setDetailSaleId(null)} onCancel={(sale) => setSaleToCancel(sale)} />}
+      {saleToCancel && <CancelSaleModal sale={saleToCancel} pending={cancelMutation.isPending} onClose={() => setSaleToCancel(null)} onSubmit={(reason) => cancelMutation.mutateAsync({ id: saleId(saleToCancel), reason })} />}
     </section>
   )
+}
+
+function useDebouncedValue(value, delay) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value.trim()), delay)
+    return () => window.clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
+
+function SearchResults({ loading, empty, children }) {
+  return <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">{loading ? <p className="p-4 text-sm text-slate-500">Buscando...</p> : empty ? <p className="p-4 text-sm text-slate-500">Sin resultados</p> : children}</div>
+}
+
+function DateFilter({ label, value, onChange }) {
+  return <div><label className="mb-1 block text-xs font-medium text-slate-500">{label}</label><input type="date" value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" /></div>
 }

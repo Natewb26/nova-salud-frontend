@@ -1,147 +1,102 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import {
+  AlertTriangle,
+  ArrowUpRight,
   BarChart3,
-  ShoppingCart,
+  CalendarDays,
+  CalendarClock,
+  LoaderCircle,
   Package,
   RefreshCw,
+  ShoppingCart,
   TrendingUp,
-  AlertTriangle,
 } from 'lucide-react'
+import { getErrorMessage } from '../../services/apiErrors'
+import { getReportSummary } from '../../services/reportService'
 
-import { DEMO_DATA_MODE } from '../../services/dataMode'
-import { subscribeDemoStore } from '../../services/demoStore'
-import {
-  getReportOperations,
-  getReportInventory,
-} from '../../services/reportService'
+const money = new Intl.NumberFormat('es-PE', {
+  style: 'currency',
+  currency: 'PEN',
+})
+const number = new Intl.NumberFormat('es-PE')
 
-const formatNumber = (value) =>
-  new Intl.NumberFormat('es-PE').format(Number(value) || 0)
-
-const formatCurrency = (value) =>
-  new Intl.NumberFormat('es-PE', {
-    style: 'currency',
-    currency: 'PEN',
-  }).format(Number(value) || 0)
-
-const formatDate = (value) => {
-  if (!value) return '-'
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) return '-'
-
-  return new Intl.DateTimeFormat('es-PE', {
-    dateStyle: 'medium',
-  }).format(date)
+const salesMetric = (summary, period) => {
+  const source =
+    summary[`ventas_${period}`] ??
+    summary.ventas?.[period] ??
+    summary[period] ??
+    {}
+  return {
+    cantidad: Number(source.cantidad ?? source.total_ventas ?? source.numero_ventas ?? 0),
+    total: Number(source.total ?? source.monto_total ?? source.importe ?? 0),
+  }
 }
 
+const productQuantity = (product) =>
+  Number(product.cantidad ?? product.cantidad_vendida ?? product.unidades ?? 0)
+
+const productTotal = (product) =>
+  Number(product.total ?? product.total_vendido ?? product.monto ?? 0)
+
+const productName = (product) =>
+  product.nombre ?? product.nombre_producto ?? product.producto?.nombre ??
+  `Producto #${product.id_producto ?? product.id ?? '—'}`
+
 export default function Reportes() {
-  const [operations, setOperations] = useState([])
-  const [inventory, setInventory] = useState([])
-  const [period, setPeriod] = useState('all')
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-
-  const loadReports = useCallback(async () => {
-    setLoading(true)
-    setError('')
-
-    try {
-      const [operationsData, inventoryData] = await Promise.all([
-        getReportOperations(),
-        getReportInventory(),
-      ])
-
-      setOperations(
-        Array.isArray(operationsData) ? operationsData : [],
-      )
-      setInventory(
-        Array.isArray(inventoryData) ? inventoryData : [],
-      )
-    } catch (err) {
-      setError(err.message || 'No se pudieron cargar los reportes.')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    const unsubscribe = DEMO_DATA_MODE
-      ? subscribeDemoStore(loadReports)
-      : undefined
-
-    Promise.resolve().then(loadReports)
-
-    return unsubscribe
-  }, [loadReports])
-
-  const filteredOperations = useMemo(() => {
-    if (period === 'all') return operations
-
-    const days = Number(period)
-    const limit = new Date()
-    limit.setHours(0, 0, 0, 0)
-    limit.setDate(limit.getDate() - days + 1)
-
-    return operations.filter((operation) => {
-      if (!operation.fecha) return false
-
-      const date = new Date(operation.fecha)
-
-      return !Number.isNaN(date.getTime()) && date >= limit
-    })
-  }, [operations, period])
-
-  const sales = filteredOperations.filter(
-    (operation) => operation.tipo === 'venta',
+  const reportQuery = useQuery({
+    queryKey: ['reportes', 'resumen'],
+    queryFn: getReportSummary,
+  })
+  const summary = reportQuery.data ?? {}
+  const today = salesMetric(summary, 'hoy')
+  const month = salesMetric(summary, 'mes')
+  const topProducts = (
+    summary.top_productos ??
+    summary.top_productos_mes ??
+    summary.productos_mas_vendidos ??
+    []
+  ).slice(0, 5)
+  const alerts = summary.alertas ?? summary.contadores_alertas ?? {}
+  const replenishment = Number(
+    alerts.reposicion ?? alerts.stock ?? alerts.stock_bajo ?? 0,
   )
-  const purchases = filteredOperations.filter(
-    (operation) => operation.tipo === 'compra',
+  const expiration = Number(
+    alerts.vencimiento ?? alerts.por_vencer ?? 0,
   )
-
-  const salesTotal = sales.reduce(
-    (total, operation) => total + Number(operation.total || 0),
-    0,
+  const totalAlerts = Number(
+    alerts.total ?? replenishment + expiration,
   )
-  const purchasesTotal = purchases.reduce(
-    (total, operation) => total + Number(operation.total || 0),
-    0,
-  )
-
-  const lowStockProducts = inventory.filter(
-    (product) =>
-      Number(product.stock || 0) <= Number(product.stock_minimo ?? 10),
-  )
-
-  const totalUnits = inventory.reduce(
-    (total, product) => total + Number(product.stock || 0),
-    0,
-  )
+  const averageToday = today.cantidad ? today.total / today.cantidad : 0
+  const averageMonth = month.cantidad ? month.total / month.cantidad : 0
+  const todayShare = month.total > 0
+    ? Math.min(100, (today.total / month.total) * 100)
+    : 0
+  const maxQuantity = Math.max(1, ...topProducts.map(productQuantity))
 
   const cards = [
     {
-      title: 'Total de ventas',
-      value: formatCurrency(salesTotal),
-      detail: `${formatNumber(sales.length)} operaciones`,
+      title: 'Ventas de hoy',
+      value: money.format(today.total),
+      detail: `${number.format(today.cantidad)} operaciones`,
       icon: TrendingUp,
     },
     {
-      title: 'Total de compras',
-      value: formatCurrency(purchasesTotal),
-      detail: `${formatNumber(purchases.length)} operaciones`,
+      title: 'Ventas del mes',
+      value: money.format(month.total),
+      detail: `${number.format(month.cantidad)} operaciones`,
+      icon: CalendarDays,
+    },
+    {
+      title: 'Ticket promedio mensual',
+      value: money.format(averageMonth),
+      detail: `Hoy: ${money.format(averageToday)}`,
       icon: ShoppingCart,
     },
     {
-      title: 'Productos registrados',
-      value: formatNumber(inventory.length),
-      detail: `${formatNumber(totalUnits)} unidades disponibles`,
-      icon: Package,
-    },
-    {
-      title: 'Productos con stock bajo',
-      value: formatNumber(lowStockProducts.length),
-      detail: 'Igual o por debajo del stock mínimo',
+      title: 'Alertas activas',
+      value: number.format(totalAlerts),
+      detail: `${replenishment} de stock · ${expiration} de vencimiento`,
       icon: AlertTriangle,
     },
   ]
@@ -150,227 +105,99 @@ export default function Reportes() {
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">
-            Reportes
-          </h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Resumen de ventas, compras e inventario.
-          </p>
+          <h1 className="text-2xl font-bold text-slate-800">Reportes y analítica</h1>
+          <p className="mt-1 text-sm text-slate-500">Indicadores comerciales del día y del mes actual.</p>
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={period}
-            onChange={(event) => setPeriod(event.target.value)}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
-            aria-label="Filtrar reportes por período"
-          >
-            <option value="all">Todo el historial</option>
-            <option value="7">Últimos 7 días</option>
-            <option value="30">Últimos 30 días</option>
-          </select>
-
-          <button
-            type="button"
-            onClick={loadReports}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-teal-700 disabled:opacity-50"
-          >
-            <RefreshCw size={16} />
-            Actualizar
-          </button>
-        </div>
+        <button type="button" onClick={() => reportQuery.refetch()} disabled={reportQuery.isFetching} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50">
+          <RefreshCw size={17} className={reportQuery.isFetching ? 'animate-spin' : ''} />
+          Actualizar datos
+        </button>
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {error}
+      {reportQuery.isError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {getErrorMessage(reportQuery.error)}
         </div>
       )}
 
-      {loading ? (
-        <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500">
-          Cargando reportes...
+      {reportQuery.isPending ? (
+        <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-14 text-sm text-slate-500">
+          <LoaderCircle size={21} className="animate-spin text-teal-600" />
+          Cargando analítica...
         </div>
       ) : (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {cards.map((card) => {
-              const Icon = card.icon
-
-              return (
-                <article
-                  key={card.title}
-                  className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-medium text-slate-500">
-                      {card.title}
-                    </p>
-                    <Icon className="shrink-0 text-teal-600" size={20} />
-                  </div>
-
-                  <p className="mt-3 text-2xl font-bold text-slate-800">
-                    {card.value}
-                  </p>
-
-                  <p className="mt-2 text-xs text-slate-400">
-                    {card.detail}
-                  </p>
-                </article>
-              )
-            })}
-          </div>
-
-          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="font-semibold text-slate-800">
-                  Resumen de operaciones
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  {formatNumber(filteredOperations.length)} operaciones en el período seleccionado.
-                </p>
-              </div>
-
-              <BarChart3 className="text-teal-600" size={22} />
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[620px] text-left text-sm">
-                <thead className="border-b bg-slate-50 text-slate-600">
-                  <tr>
-                    <th className="p-3 font-semibold">Identificador</th>
-                    <th className="p-3 font-semibold">Tipo</th>
-                    <th className="p-3 font-semibold">Contacto</th>
-                    <th className="p-3 font-semibold">Fecha</th>
-                    <th className="p-3 text-right font-semibold">Total</th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {filteredOperations.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan="5"
-                        className="p-8 text-center text-slate-500"
-                      >
-                        No hay operaciones para el período seleccionado.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredOperations.map((operation) => (
-                      <tr
-                        key={operation.id_operacion}
-                        className="border-b last:border-0 hover:bg-slate-50"
-                      >
-                        <td className="p-3 font-medium text-slate-700">
-                          #{operation.id_operacion}
-                        </td>
-                        <td className="p-3">
-                          <span
-                            className={
-                              operation.tipo === 'venta'
-                                ? 'rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700'
-                                : 'rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700'
-                            }
-                          >
-                            {operation.tipo === 'venta' ? 'Venta' : 'Compra'}
-                          </span>
-                        </td>
-                        <td className="p-3 text-slate-600">
-                          {operation.nombre_contacto || 'Contacto general'}
-                        </td>
-                        <td className="p-3 text-slate-600">
-                          {formatDate(operation.fecha)}
-                        </td>
-                        <td className="p-3 text-right font-medium text-slate-800">
-                          {formatCurrency(operation.total)}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {cards.map(({ title, value, detail, icon: Icon }) => (
+              <article key={title} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-slate-500">{title}</p>
+                  <div className="rounded-lg bg-teal-50 p-2.5 text-teal-700"><Icon size={21} /></div>
+                </div>
+                <p className="mt-4 text-2xl font-bold text-slate-800">{value}</p>
+                <p className="mt-2 text-xs text-slate-400">{detail}</p>
+              </article>
+            ))}
           </section>
 
-          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-800">
-                Estado del inventario
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Existencias actuales comparadas con el stock mínimo.
-              </p>
+          <section className="grid gap-6 xl:grid-cols-3">
+            <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+              <div className="flex items-center justify-between gap-3">
+                <div><h2 className="font-semibold text-slate-800">Rendimiento de ventas</h2><p className="mt-1 text-xs text-slate-500">Participación de las ventas de hoy en el total mensual.</p></div>
+                <BarChart3 size={22} className="text-teal-600" />
+              </div>
+              <div className="mt-6 grid gap-5 sm:grid-cols-2">
+                <Metric label="Operaciones de hoy" value={number.format(today.cantidad)} helper={`${month.cantidad} en el mes`} />
+                <Metric label="Ingreso de hoy" value={money.format(today.total)} helper={`${todayShare.toFixed(1)}% del ingreso mensual`} />
+              </div>
+              <div className="mt-6">
+                <div className="mb-2 flex justify-between text-xs text-slate-500"><span>Avance respecto al mes</span><span>{todayShare.toFixed(1)}%</span></div>
+                <div className="h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-teal-500 transition-all" style={{ width: `${todayShare}%` }} /></div>
+              </div>
+            </article>
+
+            <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div><h2 className="font-semibold text-slate-800">Estado de alertas</h2><p className="mt-1 text-xs text-slate-500">Situaciones que requieren atención.</p></div>
+              <div className="mt-5 space-y-4">
+                <AlertMetric icon={AlertTriangle} label="Reposición" value={replenishment} color="red" />
+                <AlertMetric icon={CalendarClock} label="Vencimiento" value={expiration} color="amber" />
+              </div>
+              <Link to="/alertas" className="mt-5 inline-flex items-center gap-1 text-sm font-semibold text-teal-700 hover:underline">Ver detalle de alertas<ArrowUpRight size={15} /></Link>
+            </article>
+          </section>
+
+          <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between border-b border-slate-100 p-5">
+              <div><h2 className="font-semibold text-slate-800">Top 5 productos del mes</h2><p className="mt-1 text-xs text-slate-500">Clasificación por unidades vendidas.</p></div>
+              <Package size={22} className="text-teal-600" />
             </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[520px] text-left text-sm">
-                <thead className="border-b bg-slate-50 text-slate-600">
-                  <tr>
-                    <th className="p-3 font-semibold">Producto</th>
-                    <th className="p-3 font-semibold">Categoría</th>
-                    <th className="p-3 text-right font-semibold">Stock</th>
-                    <th className="p-3 text-right font-semibold">Mínimo</th>
-                    <th className="p-3 text-right font-semibold">Estado</th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {inventory.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan="5"
-                        className="p-8 text-center text-slate-500"
-                      >
-                        No hay productos de inventario disponibles.
-                      </td>
-                    </tr>
-                  ) : (
-                    inventory.map((product) => {
-                      const stock = Number(product.stock || 0)
-                      const minimum = Number(product.stock_minimo ?? 10)
-                      const low = stock <= minimum
-
-                      return (
-                        <tr
-                          key={product.id_producto}
-                          className="border-b last:border-0"
-                        >
-                          <td className="p-3 font-medium text-slate-700">
-                            {product.nombre}
-                          </td>
-                          <td className="p-3 text-slate-500">
-                            {product.categoria || '-'}
-                          </td>
-                          <td className="p-3 text-right text-slate-700">
-                            {formatNumber(stock)}
-                          </td>
-                          <td className="p-3 text-right text-slate-500">
-                            {formatNumber(minimum)}
-                          </td>
-                          <td className="p-3 text-right">
-                            <span
-                              className={
-                                low
-                                  ? 'rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700'
-                                  : 'rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700'
-                              }
-                            >
-                              {low ? 'Stock bajo' : 'Normal'}
-                            </span>
-                          </td>
-                        </tr>
-                      )
-                    })
-                  )}
-                </tbody>
-              </table>
+            <div className="divide-y divide-slate-100">
+              {topProducts.map((product, index) => {
+                const quantity = productQuantity(product)
+                const width = (quantity / maxQuantity) * 100
+                return (
+                  <div key={product.id_producto ?? product.id ?? index} className="grid gap-3 px-5 py-4 md:grid-cols-[2rem_1fr_7rem_8rem] md:items-center">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-700">{index + 1}</span>
+                    <div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-800">{productName(product)}</p><div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-teal-500" style={{ width: `${width}%` }} /></div></div>
+                    <p className="text-sm text-slate-600"><span className="font-semibold text-slate-800">{number.format(quantity)}</span> unidades</p>
+                    <p className="text-sm font-semibold text-slate-800 md:text-right">{money.format(productTotal(product))}</p>
+                  </div>
+                )
+              })}
+              {topProducts.length === 0 && <div className="p-12 text-center text-sm text-slate-400"><Package size={32} className="mx-auto mb-3 text-slate-300" />Todavía no hay ventas del mes para construir el ranking.</div>}
             </div>
           </section>
         </>
       )}
     </div>
   )
+}
+
+function Metric({ label, value, helper }) {
+  return <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs font-medium uppercase text-slate-400">{label}</p><p className="mt-2 text-xl font-bold text-slate-800">{value}</p><p className="mt-1 text-xs text-slate-500">{helper}</p></div>
+}
+
+function AlertMetric({ icon: Icon, label, value, color }) {
+  const classes = color === 'red' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'
+  return <div className="flex items-center justify-between rounded-xl border border-slate-100 p-4"><span className="flex items-center gap-3"><span className={`rounded-lg p-2 ${classes}`}><Icon size={18} /></span><span className="text-sm font-medium text-slate-700">{label}</span></span><span className="text-xl font-bold text-slate-800">{value}</span></div>
 }

@@ -222,15 +222,9 @@ function loadState() {
 }
 
 let state = loadState()
-const listeners = new Set()
 
 export function getDemoState() {
   return state
-}
-
-export function subscribeDemoStore(listener) {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
 }
 
 export function updateDemoState(updater) {
@@ -250,20 +244,20 @@ export function updateDemoState(updater) {
     }
   }
 
-  listeners.forEach((listener) => listener())
   return state
 }
 
-export function resetDemoState() {
-  state = clone(initialState)
-
-  if (typeof window !== 'undefined') {
-    window.localStorage.removeItem(STORAGE_KEY)
-  }
-
-  listeners.forEach((listener) => listener())
-  return state
-}
+// [SIN USO] Utilidad de reinicio sin importadores ni llamadas en el proyecto.
+// export function resetDemoState() {
+//   state = clone(initialState)
+//
+//   if (typeof window !== 'undefined') {
+//     window.localStorage.removeItem(STORAGE_KEY)
+//   }
+//
+//   listeners.forEach((listener) => listener())
+//   return state
+// }
 
 export function getNextDemoId(items, field) {
   return items.reduce((max, item) => {

@@ -1,173 +1,278 @@
-﻿import api from './api'
+import api from './api'
 import { DEMO_DATA_MODE } from './dataMode'
-import { getDemoState, updateDemoState, getNextDemoId } from './demoStore'
+import { getDemoState, getNextDemoId, updateDemoState } from './demoStore'
 
-export const getSalesCustomers = async () => {
-  if (DEMO_DATA_MODE) {
-    return getDemoState().contacts.filter((contact) => contact.tipo === 'cliente')
-  }
+const productId = (product) => Number(product.id_producto ?? product.id)
+const saleId = (sale) => Number(sale.id_venta ?? sale.id_operacion ?? sale.id)
 
-  const response = await api.get('/api/contactos')
-  return response.data.filter((contact) => contact.tipo === 'cliente')
+const normalizeProduct = (product) => ({
+  ...product,
+  id_producto: productId(product),
+  nombre: product.nombre ?? product.name,
+  codigo_barras: product.codigo_barras ?? product.sku,
+  precio_venta: Number(product.precio_venta ?? product.price ?? 0),
+  stock_disponible: Number(product.stock_disponible ?? product.stock ?? 0),
+})
+
+const createDemoError = (code, message, status = 422) => {
+  const error = new Error(message)
+  error.response = { status, data: { error: { code, message } } }
+  return error
 }
 
-export const getSalesProducts = async () => {
-  if (DEMO_DATA_MODE) {
-    return getDemoState().products
-      .filter((product) => product.estado !== 'inactivo')
-      .map((product) => ({
-        ...product,
-        id_producto: product.id_producto ?? product.id,
-        nombre: product.nombre ?? product.name,
-        precio_venta: Number(product.precio_venta ?? product.price ?? 0),
-        codigo_barras: product.codigo_barras ?? product.sku,
-      }))
+const listMeta = (page, pageSize, total) => ({
+  page,
+  page_size: pageSize,
+  total,
+  total_pages: Math.max(1, Math.ceil(total / pageSize)),
+})
+
+const unwrapList = (response) => ({
+  data: Array.isArray(response.data?.data) ? response.data.data : [],
+  meta: response.data?.meta ?? listMeta(1, 20, 0),
+})
+
+export const getSalesProducts = async (params = {}) => {
+  if (!DEMO_DATA_MODE) {
+    const response = await api.get('/productos', { params })
+    return unwrapList(response)
   }
 
-  const response = await api.get('/api/productos', {
-    params: { limit: 100, offset: 0 },
-  })
-  return response.data.filter((product) => product.estado !== 'inactivo')
+  const search = String(params.search ?? '').trim().toLowerCase()
+  const page = Math.max(1, Number(params.page) || 1)
+  const pageSize = Math.min(100, Math.max(1, Number(params.page_size) || 10))
+  let products = getDemoState().products
+    .filter((product) => product.estado !== 'inactivo')
+    .map(normalizeProduct)
+
+  if (search) {
+    products = products.filter((product) =>
+      [product.nombre, product.codigo_barras].some((value) =>
+        String(value ?? '').toLowerCase().includes(search),
+      ),
+    )
+  }
+
+  const total = products.length
+  const start = (page - 1) * pageSize
+  return {
+    data: products.slice(start, start + pageSize),
+    meta: listMeta(page, pageSize, total),
+  }
 }
 
-export const getSalesHistory = async () => {
-  if (DEMO_DATA_MODE) {
-    return getDemoState().operations
-      .filter((operation) => operation.tipo === 'venta')
-      .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
+export const getProductByBarcode = async (barcode) => {
+  if (!DEMO_DATA_MODE) {
+    const response = await api.get('/productos', {
+      params: { codigo_barras: barcode, page: 1, page_size: 1 },
+    })
+    return response.data?.data?.[0] ?? null
   }
 
-  const response = await api.get('/api/operaciones', {
-    params: { tipo: 'venta', limit: 100, offset: 0 },
-  })
-  return response.data
+  const product = getDemoState().products.find(
+    (item) =>
+      item.estado !== 'inactivo' &&
+      String(item.codigo_barras ?? item.sku) === String(barcode),
+  )
+  return product ? normalizeProduct(product) : null
+}
+
+export const getSalesProduct = async (id) => {
+  if (!DEMO_DATA_MODE) {
+    const response = await api.get(`/productos/${id}`)
+    return response.data?.data ?? null
+  }
+
+  const product = getDemoState().products.find(
+    (item) => productId(item) === Number(id),
+  )
+  return product ? normalizeProduct(product) : null
+}
+
+export const getSalesCustomers = async (params = {}) => {
+  const requestParams = { ...params, tipo: 'cliente' }
+
+  if (!DEMO_DATA_MODE) {
+    const response = await api.get('/contactos', { params: requestParams })
+    return unwrapList(response)
+  }
+
+  const search = String(params.search ?? '').trim().toLowerCase()
+  const page = Math.max(1, Number(params.page) || 1)
+  const pageSize = Math.min(100, Math.max(1, Number(params.page_size) || 10))
+  let customers = getDemoState().contacts.filter(
+    (contact) => contact.tipo === 'cliente',
+  )
+
+  if (search) {
+    customers = customers.filter((customer) =>
+      [customer.nombre, customer.documento].some((value) =>
+        String(value ?? '').toLowerCase().includes(search),
+      ),
+    )
+  }
+
+  const total = customers.length
+  const start = (page - 1) * pageSize
+  return {
+    data: customers.slice(start, start + pageSize),
+    meta: listMeta(page, pageSize, total),
+  }
+}
+
+export const getSales = async (params = {}) => {
+  if (!DEMO_DATA_MODE) {
+    const response = await api.get('/ventas', { params })
+    return unwrapList(response)
+  }
+
+  const page = Math.max(1, Number(params.page) || 1)
+  const pageSize = Math.min(100, Math.max(1, Number(params.page_size) || 20))
+  let sales = getDemoState().operations
+    .filter((operation) => operation.tipo === 'venta')
+    .sort((left, right) => new Date(right.fecha) - new Date(left.fecha))
+
+  if (params.desde) {
+    sales = sales.filter((sale) => String(sale.fecha).slice(0, 10) >= params.desde)
+  }
+  if (params.hasta) {
+    sales = sales.filter((sale) => String(sale.fecha).slice(0, 10) <= params.hasta)
+  }
+  if (params.estado) {
+    sales = sales.filter(
+      (sale) => String(sale.estado).toLowerCase() === params.estado.toLowerCase(),
+    )
+  }
+
+  const total = sales.length
+  const start = (page - 1) * pageSize
+  return {
+    data: sales.slice(start, start + pageSize),
+    meta: listMeta(page, pageSize, total),
+  }
+}
+
+export const getSale = async (id) => {
+  if (!DEMO_DATA_MODE) {
+    const response = await api.get(`/ventas/${id}`)
+    return response.data?.data ?? null
+  }
+
+  return getDemoState().operations.find(
+    (operation) => operation.tipo === 'venta' && saleId(operation) === Number(id),
+  ) ?? null
 }
 
 export const createSale = async (sale) => {
-  if (DEMO_DATA_MODE) {
-    const state = getDemoState()
-
-    if (!Array.isArray(sale.items) || sale.items.length === 0) {
-      throw new Error('Agrega al menos un producto a la venta.')
-    }
-
-    if (sale.id_contacto != null) {
-      const customer = state.contacts.find(
-        (contact) =>
-          contact.id_contacto === Number(sale.id_contacto) &&
-          contact.tipo === 'cliente',
-      )
-      if (!customer) throw new Error('El cliente seleccionado no es válido.')
-    }
-
-    const quantities = new Map()
-
-    sale.items.forEach((item) => {
-      const id = Number(item.id_producto)
-      const cantidad = Number(item.cantidad)
-      if (!Number.isInteger(cantidad) || cantidad <= 0) {
-        throw new Error('La cantidad debe ser un entero positivo.')
-      }
-      quantities.set(id, (quantities.get(id) ?? 0) + cantidad)
-    })
-
-    const normalizedItems = [...quantities.entries()].map(([id, cantidad]) => {
-      const product = state.products.find(
-        (entry) => Number(entry.id_producto ?? entry.id) === id,
-      )
-
-      if (!product || product.estado === 'inactivo') {
-        throw new Error('Uno de los productos no está disponible.')
-      }
-
-      if (Number(product.stock ?? 0) < cantidad) {
-        throw new Error(`Stock insuficiente para ${product.nombre ?? product.name}. Disponible: ${product.stock}.`)
-      }
-
-      return {
-        id_producto: id,
-        nombre: product.nombre ?? product.name,
-        cantidad,
-        precio_unitario: Number(product.precio_venta ?? product.price ?? 0),
-      }
-    })
-
-    const total = normalizedItems.reduce(
-      (sum, item) => sum + item.cantidad * item.precio_unitario,
-      0,
-    )
-
-    let created
-
-    updateDemoState((current) => {
-      const id = getNextDemoId(current.operations, 'id_operacion')
-      const fecha = new Date().toISOString()
-
-      const products = current.products.map((product) => {
-        const productId = Number(product.id_producto ?? product.id)
-        const sold = normalizedItems.find((item) => item.id_producto === productId)
-
-        return sold
-          ? { ...product, stock: Number(product.stock ?? 0) - sold.cantidad }
-          : product
-      })
-
-      let lots = [...current.lots]
-
-      normalizedItems.forEach((item) => {
-        let remaining = item.cantidad
-
-        const productLots = lots
-          .filter((lot) => Number(lot.id_producto) === item.id_producto)
-          .sort((a, b) => String(a.fecha_vencimiento).localeCompare(String(b.fecha_vencimiento)))
-
-        productLots.forEach((lot) => {
-          if (remaining <= 0) return
-
-          const available = Number(lot.cantidad ?? 0)
-          const reduction = Math.min(available, remaining)
-          lot.cantidad = available - reduction
-          remaining -= reduction
-        })
-      })
-
-      const movementStartId = getNextDemoId(current.movements, 'id_movimiento')
-      const newMovements = normalizedItems.map((item, index) => ({
-        id_movimiento: movementStartId + index,
-        id_producto: item.id_producto,
-        nombre_producto: item.nombre,
-        tipo: 'salida',
-        cantidad: item.cantidad,
-        fecha,
-        referencia: `Venta #${id}`,
-      }))
-
-      created = {
-        id_operacion: id,
-        tipo: 'venta',
-        id_contacto: sale.id_contacto ?? null,
-        nombre_contacto:
-          current.contacts.find((contact) => contact.id_contacto === Number(sale.id_contacto))?.nombre ?? 'Cliente general',
-        fecha,
-        total,
-        estado: 'Registrada',
-        metodo_pago: sale.metodo_pago ?? null,
-        items: normalizedItems,
-        resultado: 'registrada',
-      }
-
-      return {
-        ...current,
-        products,
-        lots,
-        movements: [...current.movements, ...newMovements],
-        operations: [...current.operations, created],
-      }
-    })
-
-    return created
+  if (!DEMO_DATA_MODE) {
+    const response = await api.post('/ventas', sale)
+    return response.data?.data
   }
 
-  const response = await api.post('/api/ventas', sale)
-  return response.data
+  const state = getDemoState()
+  const normalizedItems = sale.items.map((item) => {
+    const product = state.products.find(
+      (candidate) => productId(candidate) === Number(item.id_producto),
+    )
+    const quantity = Number(item.cantidad)
+    const available = Number(product?.stock ?? product?.stock_disponible ?? 0)
+
+    if (!product || available < quantity) {
+      throw createDemoError(
+        'STOCK_INSUFICIENTE',
+        `Stock insuficiente para ${product?.nombre ?? product?.name ?? 'el producto seleccionado'}. Disponible: ${available}.`,
+        409,
+      )
+    }
+
+    const unitPrice = Number(product.precio_venta ?? product.price ?? 0)
+    return {
+      id_producto: productId(product),
+      nombre_producto: product.nombre ?? product.name,
+      cantidad: quantity,
+      precio_unitario: unitPrice,
+      subtotal: quantity * unitPrice,
+    }
+  })
+
+  let created
+
+  updateDemoState((current) => {
+    const id = getNextDemoId(current.operations, 'id_operacion')
+    const fecha = new Date().toISOString()
+    const products = current.products.map((product) => {
+      const sold = normalizedItems.find(
+        (item) => item.id_producto === productId(product),
+      )
+      return sold
+        ? { ...product, stock: Number(product.stock ?? 0) - sold.cantidad }
+        : product
+    })
+    const lots = current.lots.map((lot) => ({ ...lot }))
+
+    normalizedItems.forEach((item) => {
+      let remaining = item.cantidad
+      lots
+        .filter((lot) => Number(lot.id_producto) === item.id_producto)
+        .sort((left, right) =>
+          String(left.fecha_vencimiento).localeCompare(String(right.fecha_vencimiento)),
+        )
+        .forEach((lot) => {
+          const reduction = Math.min(Number(lot.cantidad ?? 0), remaining)
+          lot.cantidad = Number(lot.cantidad ?? 0) - reduction
+          remaining -= reduction
+        })
+    })
+
+    created = {
+      id_venta: id,
+      id_operacion: id,
+      tipo: 'venta',
+      id_contacto: sale.id_contacto ?? null,
+      cliente: current.contacts.find(
+        (contact) => Number(contact.id_contacto) === Number(sale.id_contacto),
+      ) ?? null,
+      fecha,
+      total: normalizedItems.reduce((sum, item) => sum + item.subtotal, 0),
+      estado: 'registrada',
+      metodo_pago: sale.metodo_pago,
+      vendedor: { id: 'demo-admin-001', nombre: 'Administrador de prueba' },
+      items: normalizedItems,
+    }
+
+    return {
+      ...current,
+      products,
+      lots,
+      operations: [...current.operations, created],
+    }
+  })
+
+  return created
 }
+
+export const cancelSale = async (id, reason) => {
+  if (!DEMO_DATA_MODE) {
+    const response = await api.post(`/ventas/${id}/anular`, { motivo: reason })
+    return response.data?.data
+  }
+
+  let cancelled = null
+  updateDemoState((current) => ({
+    ...current,
+    operations: current.operations.map((operation) => {
+      if (saleId(operation) !== Number(id)) return operation
+      cancelled = {
+        ...operation,
+        estado: 'anulada',
+        motivo_anulacion: reason,
+      }
+      return cancelled
+    }),
+  }))
+  return cancelled
+}
+
+// [SIN USO] Alias de compatibilidad sin consumidores; las pantallas usan getSales.
+// export const getSalesHistory = async () =>
+//   (await getSales({ page: 1, page_size: 100, sort: '-fecha' })).data

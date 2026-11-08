@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertCircle, RefreshCw, Search, Table2, X } from 'lucide-react'
+import { getErrorMessage } from '../../services/apiErrors'
 
 const columnLabels = {
   id_producto: 'ID producto',
@@ -139,11 +140,7 @@ export default function InventoryDataView({
       const data = await fetchRecords()
       setRecords(data)
     } catch (err) {
-      setError(
-        err.response?.data?.error ||
-          err.message ||
-          'No se pudo cargar la información.',
-      )
+      setError(getErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -161,11 +158,7 @@ export default function InventoryDataView({
       .catch((err) => {
         if (!active) return
 
-        setError(
-          err.response?.data?.error ||
-            err.message ||
-            'No se pudo cargar la información.',
-        )
+        setError(getErrorMessage(err))
       })
       .finally(() => {
         if (active) setLoading(false)

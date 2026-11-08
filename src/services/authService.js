@@ -1,33 +1,82 @@
 import api from './api'
+import { DEMO_DATA_MODE } from './dataMode'
+import { clearSession, saveSession } from './tokenStorage'
 
-// Consultar si el backend está disponible.
-export const checkApiHealth = async () => {
-  const response = await api.get('/api/health')
-  return response.data
+const DEMO_SESSION_KEY = 'nova_demo_session'
+
+const DEMO_USER = {
+  id: 'demo-admin-001',
+  nombre: 'Administrador de prueba',
+  email: 'admin@novasalud.test',
+  rol: 'admin',
 }
 
-// Iniciar sesión con las credenciales del usuario.
-export const loginRequest = async (credentials) => {
-  const response = await api.post('/api/auth/login', credentials)
+const DEMO_PASSWORD = 'NovaSalud2026!'
 
-  // Guardar el token para las siguientes solicitudes protegidas.
-  if (response.data.access_token) {
-    sessionStorage.setItem(
-      'nova_access_token',
-      response.data.access_token,
-    )
+const getDemoStorage = () =>
+  typeof window === 'undefined' ? null : window.sessionStorage
+
+const createDemoLoginError = () => {
+  const error = new Error('Correo o contraseña incorrectos')
+  error.code = 'CREDENCIALES_INVALIDAS'
+  return error
+}
+
+export const clearLocalSession = () => {
+  getDemoStorage()?.removeItem(DEMO_SESSION_KEY)
+  clearSession()
+}
+
+export const login = async (email, password) => {
+  if (DEMO_DATA_MODE) {
+    if (email !== DEMO_USER.email || password !== DEMO_PASSWORD) {
+      throw createDemoLoginError()
+    }
+
+    clearSession()
+    getDemoStorage()?.setItem(DEMO_SESSION_KEY, 'true')
+    return DEMO_USER
   }
 
-  return response.data
+  const response = await api.post('/auth/login', { email, password })
+  const data = response.data?.data
+
+  if (!data?.access_token || !data?.refresh_token || !data?.usuario) {
+    clearSession()
+    throw new Error('La API no devolvió una sesión válida')
+  }
+
+  saveSession({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+  })
+
+  return data.usuario
 }
 
-// Consultar el perfil del usuario autenticado.
-export const getCurrentUser = async () => {
-  const response = await api.get('/api/auth/me')
-  return response.data
+export const getMe = async () => {
+  if (DEMO_DATA_MODE) {
+    const hasDemoSession =
+      getDemoStorage()?.getItem(DEMO_SESSION_KEY) === 'true'
+
+    return hasDemoSession ? DEMO_USER : null
+  }
+
+  const response = await api.get('/auth/me')
+  return response.data?.data ?? null
 }
 
-// Cerrar la sesión local del frontend.
-export const logoutRequest = () => {
-  sessionStorage.removeItem('nova_access_token')
+export const logout = async () => {
+  if (DEMO_DATA_MODE) {
+    clearLocalSession()
+    return
+  }
+
+  try {
+    await api.post('/auth/logout')
+  } catch {
+    // El cierre local debe completarse aunque el servidor no responda.
+  } finally {
+    clearLocalSession()
+  }
 }

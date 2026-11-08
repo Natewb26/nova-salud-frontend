@@ -1,19 +1,25 @@
 import { BrowserRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from './context/AuthProvider'
-import { CategoryProvider } from './context/CategoryProvider'
-import { ProductProvider } from './context/ProductProvider'
 import AppRouter from './routes/AppRouter'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30000,
+      retry: 1,
+    },
+  },
+})
 
 export default function App() {
   return (
-    <AuthProvider>
-      <CategoryProvider>
-        <ProductProvider>
-          <BrowserRouter>
-            <AppRouter />
-          </BrowserRouter>
-        </ProductProvider>
-      </CategoryProvider>
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRouter />
+        </BrowserRouter>
+      </AuthProvider>
+    </QueryClientProvider>
   )
 }

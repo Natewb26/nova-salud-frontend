@@ -1,73 +1,40 @@
 import { useEffect, useState } from 'react'
 import { AuthContext } from './authContext'
 import {
-  getCurrentUser,
-  loginRequest,
-  logoutRequest,
+  clearLocalSession,
+  getMe,
+  login as loginSession,
+  logout as logoutSession,
 } from '../services/authService'
-
-// El modo demo solo está disponible durante el desarrollo local.
-const DEMO_MODE =
-  import.meta.env.DEV && import.meta.env.VITE_DEMO_AUTH === 'true'
-
-const DEMO_SESSION_KEY = 'nova_demo_session'
-const ACCESS_TOKEN_KEY = 'nova_access_token'
-
-const DEMO_USER = {
-  id: 'demo-admin-001',
-  nombre: 'Administrador de prueba',
-  rol: 'admin',
-  estado: 'activo',
-}
-
-const DEMO_EMAIL = 'admin@novasalud.test'
-const DEMO_PASSWORD = 'NovaSalud2026!'
+import { DEMO_DATA_MODE } from '../services/dataMode'
+import { getAccessToken } from '../services/tokenStorage'
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  // Recuperar la sesión correspondiente al modo activo.
   useEffect(() => {
     let active = true
 
-    const verifySession = async () => {
-      if (DEMO_MODE) {
-        // En modo demo no se utilizan tokens ni servicios de la API.
-        sessionStorage.removeItem(ACCESS_TOKEN_KEY)
-
-        const hasDemoSession =
-          sessionStorage.getItem(DEMO_SESSION_KEY) === 'true'
-
-        if (active) {
-          setUser(hasDemoSession ? DEMO_USER : null)
-          setLoading(false)
-        }
-
-        return
-      }
-
-      // Fuera del modo demo se utiliza exclusivamente la API.
-      sessionStorage.removeItem(DEMO_SESSION_KEY)
-
-      const token = sessionStorage.getItem(ACCESS_TOKEN_KEY)
-
-      if (!token) {
-        if (active) {
-          setUser(null)
-          setLoading(false)
-        }
+    const restoreSession = async () => {
+      if (!DEMO_DATA_MODE && !getAccessToken()) {
+        clearLocalSession()
+        if (active) setLoading(false)
         return
       }
 
       try {
-        const currentUser = await getCurrentUser()
+        const currentUser = await getMe()
 
         if (active) {
           setUser(currentUser)
         }
+
+        if (!currentUser) {
+          clearLocalSession()
+        }
       } catch {
-        logoutRequest()
+        clearLocalSession()
 
         if (active) {
           setUser(null)
@@ -79,62 +46,38 @@ export function AuthProvider({ children }) {
       }
     }
 
-    verifySession()
+    restoreSession()
 
     return () => {
       active = false
     }
   }, [])
 
-  // Iniciar sesión en modo demo o mediante la API.
-  const login = async (credentials) => {
-    if (DEMO_MODE) {
-      const validEmail = credentials.email === DEMO_EMAIL
-      const validPassword = credentials.password === DEMO_PASSWORD
-
-      if (!validEmail || !validPassword) {
-        throw new Error(
-          'Correo o contraseña de prueba incorrectos.',
-        )
-      }
-
-      sessionStorage.removeItem(ACCESS_TOKEN_KEY)
-      sessionStorage.setItem(DEMO_SESSION_KEY, 'true')
-
-      setUser(DEMO_USER)
-
-      return DEMO_USER
+  useEffect(() => {
+    const handleLogout = () => {
+      clearLocalSession()
+      setUser(null)
     }
 
-    sessionStorage.removeItem(DEMO_SESSION_KEY)
+    window.addEventListener('auth:logout', handleLogout)
+    return () => window.removeEventListener('auth:logout', handleLogout)
+  }, [])
 
-    const response = await loginRequest(credentials)
-
-    if (!response.access_token || !response.usuario) {
-      logoutRequest()
-
-      throw new Error(
-        'La respuesta del servidor no contiene una sesión válida.',
-      )
-    }
-
-    setUser(response.usuario)
-
-    return response.usuario
+  const login = async (email, password) => {
+    const authenticatedUser = await loginSession(email, password)
+    setUser(authenticatedUser)
+    return authenticatedUser
   }
 
-  // Cerrar la sesión activa.
-  const logout = () => {
-    if (DEMO_MODE) {
-      sessionStorage.removeItem(DEMO_SESSION_KEY)
-      sessionStorage.removeItem(ACCESS_TOKEN_KEY)
-    } else {
-      logoutRequest()
-      sessionStorage.removeItem(DEMO_SESSION_KEY)
+  const logout = async () => {
+    try {
+      await logoutSession()
+    } finally {
+      setUser(null)
     }
-
-    setUser(null)
   }
+
+  const hasRole = (...roles) => roles.includes(user?.rol)
 
   return (
     <AuthContext.Provider
@@ -144,6 +87,7 @@ export function AuthProvider({ children }) {
         isAuthenticated: Boolean(user),
         login,
         logout,
+        hasRole,
       }}
     >
       {children}
