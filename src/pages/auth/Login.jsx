@@ -1,13 +1,22 @@
 import { useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { LockKeyhole, Mail, Pill, Eye, EyeOff } from 'lucide-react'
+import {
+  Eye,
+  EyeOff,
+  Loader2,
+  LockKeyhole,
+  Mail,
+  Pill,
+} from 'lucide-react'
 import { useAuth } from '../../context/useAuth'
+import { getErrorMessage, getFieldErrors } from '../../services/apiErrors'
+import { DEMO_DATA_MODE } from '../../services/dataMode'
+import { getRoleHome } from '../../routes/roleHome'
 
-const DEMO_MODE =
-  import.meta.env.DEV && import.meta.env.VITE_DEMO_AUTH === 'true'
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export default function Login() {
-  const { login, isAuthenticated, loading } = useAuth()
+  const { login, user, isAuthenticated, loading } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -15,40 +24,94 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
   const [submitting, setSubmitting] = useState(false)
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p className="text-sm text-slate-500">Verificando sesión...</p>
+      <div className="flex min-h-screen items-center justify-center bg-slate-100">
+        <div className="text-center">
+          <Loader2 className="mx-auto animate-spin text-teal-600" size={40} />
+          <p className="mt-4 text-sm text-slate-500">
+            Verificando sesión...
+          </p>
+        </div>
       </div>
     )
   }
 
   if (isAuthenticated) {
-    return <Navigate to="/dashboard" replace />
+    return <Navigate to={getRoleHome(user?.rol)} replace />
+  }
+
+  const validateForm = () => {
+    const normalizedEmail = email.trim()
+    const nextErrors = {}
+
+    if (!normalizedEmail) {
+      nextErrors.email = 'Ingresa tu correo electrónico'
+    } else if (normalizedEmail.length > 254) {
+      nextErrors.email = 'El correo no puede superar los 254 caracteres'
+    } else if (!EMAIL_PATTERN.test(normalizedEmail)) {
+      nextErrors.email = 'Ingresa un correo electrónico válido'
+    }
+
+    if (!password) {
+      nextErrors.password = 'Ingresa tu contraseña'
+    } else if (password.length > 200) {
+      nextErrors.password = 'La contraseña no puede superar los 200 caracteres'
+    }
+
+    setEmail(normalizedEmail)
+    setFieldErrors(nextErrors)
+    return Object.keys(nextErrors).length === 0
   }
 
   const handleSubmit = async (event) => {
     event.preventDefault()
     setError('')
+
+    if (!validateForm()) return
+
     setSubmitting(true)
 
     try {
-      await login({ email: email.trim(), password })
+      const authenticatedUser = await login(email.trim(), password)
+      const originalLocation = location.state?.from
+      const destination =
+        originalLocation?.pathname && originalLocation.pathname !== '/login'
+          ? originalLocation
+          : getRoleHome(authenticatedUser.rol)
 
-      const destination = location.state?.from?.pathname || '/dashboard'
       navigate(destination, { replace: true })
-    } catch (err) {
-      setError(
-        err.response?.data?.error ||
-        err.message ||
-        'No se pudo iniciar sesión. Inténtalo nuevamente.',
-      )
+    } catch (requestError) {
+      const code =
+        requestError.response?.data?.error?.code ?? requestError.code
+
+      if (code === 'VALIDACION') {
+        const apiFieldErrors = getFieldErrors(requestError)
+        setFieldErrors(apiFieldErrors)
+
+        if (Object.keys(apiFieldErrors).length === 0) {
+          setError(getErrorMessage(requestError))
+        }
+      } else if (code === 'CREDENCIALES_INVALIDAS') {
+        setError('Correo o contraseña incorrectos')
+      } else if (code === 'USUARIO_INACTIVO') {
+        setError('Tu usuario está inactivo. Contacta al administrador')
+      } else {
+        setError(getErrorMessage(requestError))
+      }
     } finally {
       setSubmitting(false)
     }
   }
+
+  const emailError = fieldErrors.email ?? fieldErrors.correo
+  const passwordError =
+    fieldErrors.password ??
+    fieldErrors.contrasena ??
+    fieldErrors.contraseña
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4 py-10">
@@ -74,7 +137,7 @@ export default function Login() {
           <p className="mt-1 text-sm text-slate-500">
             Ingresa tus credenciales para continuar.
           </p>
-          {DEMO_MODE && (
+          {DEMO_DATA_MODE && (
             <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left">
               <p className="text-sm font-semibold text-amber-800">
                 Modo de demostración
@@ -92,7 +155,7 @@ export default function Login() {
           )}
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} noValidate className="space-y-5">
           <div>
             <label
               htmlFor="email"
@@ -101,20 +164,42 @@ export default function Login() {
               Correo electrónico
             </label>
 
-            <div className="flex items-center gap-3 rounded-lg border border-slate-300 px-3 focus-within:border-teal-600 focus-within:ring-2 focus-within:ring-teal-100">
+            <div
+              className={`flex items-center gap-3 rounded-lg border px-3 focus-within:ring-2 ${
+                emailError
+                  ? 'border-red-400 focus-within:border-red-500 focus-within:ring-red-100'
+                  : 'border-slate-300 focus-within:border-teal-600 focus-within:ring-teal-100'
+              }`}
+            >
               <Mail size={18} className="text-slate-400" />
 
               <input
                 id="email"
                 type="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(event) => {
+                  setEmail(event.target.value)
+                  setFieldErrors((current) => ({
+                    ...current,
+                    email: '',
+                    correo: '',
+                  }))
+                }}
                 placeholder="usuario@novasalud.com"
                 autoComplete="username"
-                required
-                className="w-full py-3 text-sm text-slate-700 outline-none"
+                maxLength={254}
+                disabled={submitting}
+                aria-invalid={Boolean(emailError)}
+                aria-describedby={emailError ? 'email-error' : undefined}
+                className="w-full py-3 text-sm text-slate-700 outline-none disabled:cursor-not-allowed disabled:bg-white"
               />
             </div>
+
+            {emailError && (
+              <p id="email-error" className="mt-1.5 text-xs text-red-600">
+                {emailError}
+              </p>
+            )}
           </div>
 
           <div>
@@ -125,29 +210,53 @@ export default function Login() {
               Contraseña
             </label>
 
-            <div className="flex items-center gap-3 rounded-lg border border-slate-300 px-3 focus-within:border-teal-600 focus-within:ring-2 focus-within:ring-teal-100">
+            <div
+              className={`flex items-center gap-3 rounded-lg border px-3 focus-within:ring-2 ${
+                passwordError
+                  ? 'border-red-400 focus-within:border-red-500 focus-within:ring-red-100'
+                  : 'border-slate-300 focus-within:border-teal-600 focus-within:ring-teal-100'
+              }`}
+            >
               <LockKeyhole size={18} className="text-slate-400" />
 
               <input
                 id="password"
                 type={showPassword ? 'text' : 'password'}
                 value={password}
-                onChange={(event) => setPassword(event.target.value)}
+                onChange={(event) => {
+                  setPassword(event.target.value)
+                  setFieldErrors((current) => ({
+                    ...current,
+                    password: '',
+                    contrasena: '',
+                    contraseña: '',
+                  }))
+                }}
                 placeholder="Ingresa tu contraseña"
                 autoComplete="current-password"
-                required
-                className="w-full py-3 text-sm text-slate-700 outline-none"
+                maxLength={200}
+                disabled={submitting}
+                aria-invalid={Boolean(passwordError)}
+                aria-describedby={passwordError ? 'password-error' : undefined}
+                className="w-full py-3 text-sm text-slate-700 outline-none disabled:cursor-not-allowed disabled:bg-white"
               />
 
               <button
                 type="button"
                 onClick={() => setShowPassword((current) => !current)}
+                disabled={submitting}
                 aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
-                className="text-slate-400 hover:text-slate-600"
+                className="text-slate-400 hover:text-slate-600 disabled:cursor-not-allowed"
               >
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
+
+            {passwordError && (
+              <p id="password-error" className="mt-1.5 text-xs text-red-600">
+                {passwordError}
+              </p>
+            )}
           </div>
 
           {error && (
@@ -162,8 +271,9 @@ export default function Login() {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full rounded-lg bg-teal-600 py-3 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-teal-600 py-3 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
+            {submitting && <Loader2 className="animate-spin" size={18} />}
             {submitting ? 'Ingresando...' : 'Ingresar al sistema'}
           </button>
         </form>

@@ -1,128 +1,179 @@
-﻿import api from './api'
+import api from './api'
 import { DEMO_DATA_MODE } from './dataMode'
 import {
   getDemoState,
-  updateDemoState,
   getNextDemoId,
+  updateDemoState,
 } from './demoStore'
 
 const normalizeDocument = (value) =>
-  String(value ?? '')
-    .trim()
-    .replace(/\s+/g, '')
-    .toLowerCase()
+  String(value ?? '').trim().toLocaleLowerCase('es')
+
+const createDemoApiError = (code, message, details = []) => {
+  const error = new Error(message)
+  error.response = {
+    status: code === 'DUPLICADO' ? 409 : 422,
+    data: { error: { code, message, details } },
+  }
+  return error
+}
 
 const validateContact = (contact) => {
+  const details = []
+
   if (!contact.nombre?.trim()) {
-    throw new Error('El nombre del contacto es obligatorio.')
+    details.push({ campo: 'nombre', mensaje: 'El nombre es obligatorio' })
+  }
+  if (!['cliente', 'proveedor'].includes(contact.tipo)) {
+    details.push({ campo: 'tipo', mensaje: 'Selecciona un tipo válido' })
+  }
+  if (
+    contact.documento &&
+    !/^[\p{L}\p{N}]{6,20}$/u.test(contact.documento)
+  ) {
+    details.push({
+      campo: 'documento',
+      mensaje: 'Usa entre 6 y 20 letras o números, sin espacios',
+    })
+  }
+  if (
+    contact.telefono &&
+    !/^[\d+()\-\s]{6,20}$/.test(contact.telefono)
+  ) {
+    details.push({
+      campo: 'telefono',
+      mensaje: 'Usa entre 6 y 20 caracteres: dígitos, +, -, paréntesis o espacios',
+    })
   }
 
-  if (!['cliente', 'proveedor'].includes(contact.tipo)) {
-    throw new Error('El tipo de contacto no es válido.')
+  if (details.length > 0) {
+    throw createDemoApiError('VALIDACION', 'Revisa los datos ingresados', details)
   }
 }
 
-export const getContacts = async (tipo) => {
-  if (DEMO_DATA_MODE) {
-    return getDemoState().contacts
-      .filter((contact) => contact.tipo === tipo)
-      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+const ensureUniqueDocument = (contacts, document, excludedId) => {
+  if (!document) return
+
+  const duplicate = contacts.some(
+    (contact) =>
+      Number(contact.id_contacto) !== Number(excludedId) &&
+      normalizeDocument(contact.documento) === normalizeDocument(document),
+  )
+
+  if (duplicate) {
+    throw createDemoApiError(
+      'DUPLICADO',
+      'Ya existe un contacto con ese documento',
+      [{ campo: 'documento', mensaje: 'El documento ya está registrado' }],
+    )
+  }
+}
+
+export const getContacts = async (params = {}) => {
+  if (!DEMO_DATA_MODE) {
+    const response = await api.get('/contactos', { params })
+    return {
+      data: Array.isArray(response.data?.data) ? response.data.data : [],
+      meta: response.data?.meta ?? {
+        page: 1,
+        page_size: 20,
+        total: 0,
+        total_pages: 1,
+      },
+    }
   }
 
-  const response = await api.get('/api/contactos')
+  const page = Math.max(1, Number(params.page) || 1)
+  const pageSize = Math.min(100, Math.max(1, Number(params.page_size) || 20))
+  const search = String(params.search ?? '').trim().toLocaleLowerCase('es')
+  let contacts = getDemoState().contacts.slice()
 
-  return response.data.filter((contact) => contact.tipo === tipo)
+  if (params.tipo) {
+    contacts = contacts.filter((contact) => contact.tipo === params.tipo)
+  }
+
+  if (search) {
+    contacts = contacts.filter((contact) =>
+      [contact.nombre, contact.documento, contact.telefono].some((value) =>
+        String(value ?? '').toLocaleLowerCase('es').includes(search),
+      ),
+    )
+  }
+
+  contacts.sort((left, right) =>
+    String(left.nombre ?? '').localeCompare(String(right.nombre ?? ''), 'es'),
+  )
+
+  const total = contacts.length
+  const start = (page - 1) * pageSize
+
+  return {
+    data: contacts.slice(start, start + pageSize),
+    meta: {
+      page,
+      page_size: pageSize,
+      total,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
+    },
+  }
 }
 
 export const createContact = async (contact) => {
-  if (DEMO_DATA_MODE) {
-    validateContact(contact)
-
-    const state = getDemoState()
-    const documento = String(contact.documento ?? '').trim()
-    const normalizedDocument = normalizeDocument(documento)
-
-    if (
-      normalizedDocument &&
-      state.contacts.some(
-        (item) =>
-          normalizeDocument(item.documento) === normalizedDocument,
-      )
-    ) {
-      throw new Error('Ya existe un contacto con ese documento.')
-    }
-
-    let created
-
-    updateDemoState((current) => {
-      const id = getNextDemoId(current.contacts, 'id_contacto')
-
-      created = {
-        ...contact,
-        id_contacto: id,
-        nombre: contact.nombre.trim(),
-        documento: documento || null,
-        telefono: String(contact.telefono ?? '').trim() || null,
-      }
-
-      return {
-        ...current,
-        contacts: [...current.contacts, created],
-      }
-    })
-
-    return created
+  const payload = {
+    ...contact,
+    nombre: contact.nombre.trim(),
+    documento: contact.documento?.trim() || null,
+    telefono: contact.telefono?.trim() || null,
   }
 
-  const response = await api.post('/api/contactos', contact)
-  return response.data
+  if (!DEMO_DATA_MODE) {
+    const response = await api.post('/contactos', payload)
+    return response.data?.data
+  }
+
+  validateContact(payload)
+  ensureUniqueDocument(getDemoState().contacts, payload.documento)
+
+  let created
+
+  updateDemoState((current) => {
+    created = {
+      ...payload,
+      id_contacto: getNextDemoId(current.contacts, 'id_contacto'),
+    }
+
+    return { ...current, contacts: [...current.contacts, created] }
+  })
+
+  return created
 }
 
 export const updateContact = async (id, contact) => {
-  if (DEMO_DATA_MODE) {
-    validateContact(contact)
-
-    const state = getDemoState()
-    const documento = String(contact.documento ?? '').trim()
-    const normalizedDocument = normalizeDocument(documento)
-
-    if (
-      normalizedDocument &&
-      state.contacts.some(
-        (item) =>
-          item.id_contacto !== Number(id) &&
-          normalizeDocument(item.documento) === normalizedDocument,
-      )
-    ) {
-      throw new Error('Otro contacto ya utiliza ese documento.')
-    }
-
-    let updated
-
-    updateDemoState((current) => ({
-      ...current,
-      contacts: current.contacts.map((item) => {
-        if (item.id_contacto !== Number(id)) return item
-
-        updated = {
-          ...item,
-          ...contact,
-          nombre: contact.nombre.trim(),
-          documento: documento || null,
-          telefono: String(contact.telefono ?? '').trim() || null,
-        }
-
-        return updated
-      }),
-    }))
-
-    if (!updated) {
-      throw new Error('No se encontró el contacto.')
-    }
-
-    return updated
+  const payload = {
+    ...contact,
+    nombre: contact.nombre.trim(),
+    documento: contact.documento?.trim() || null,
+    telefono: contact.telefono?.trim() || null,
   }
 
-  const response = await api.patch(`/api/contactos/${id}`, contact)
-  return response.data
+  if (!DEMO_DATA_MODE) {
+    const response = await api.patch(`/contactos/${id}`, payload)
+    return response.data?.data
+  }
+
+  validateContact(payload)
+  ensureUniqueDocument(getDemoState().contacts, payload.documento, id)
+
+  let updated = null
+
+  updateDemoState((current) => ({
+    ...current,
+    contacts: current.contacts.map((item) => {
+      if (Number(item.id_contacto) !== Number(id)) return item
+      updated = { ...item, ...payload }
+      return updated
+    }),
+  }))
+
+  return updated
 }

@@ -1,25 +1,31 @@
-﻿import {
+import {
+  Bell,
+  Boxes,
+  ChartNoAxesCombined,
+  CreditCard,
   LayoutDashboard,
   Package,
+  Pill,
+  RotateCcw,
+  ShoppingCart,
   Tags,
   Truck,
-  ShoppingCart,
-  Boxes,
   Users,
-  CreditCard,
-  RotateCcw,
-  ChartNoAxesCombined,
-  Pill,
   X,
 } from 'lucide-react'
-
 import { NavLink } from 'react-router-dom'
+import { useAuth } from '../../context/useAuth'
 
 const menuGroups = [
   {
     title: 'PRINCIPAL',
     items: [
-      { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+      {
+        name: 'Dashboard',
+        path: '/dashboard',
+        icon: LayoutDashboard,
+        roles: ['admin'],
+      },
     ],
   },
   {
@@ -27,8 +33,18 @@ const menuGroups = [
     items: [
       { name: 'Productos', path: '/productos', icon: Package },
       { name: 'Categorías', path: '/categorias', icon: Tags },
-      { name: 'Proveedores', path: '/proveedores', icon: Truck },
-      { name: 'Compras', path: '/compras', icon: ShoppingCart },
+      {
+        name: 'Proveedores',
+        path: '/proveedores',
+        icon: Truck,
+        roles: ['admin'],
+      },
+      {
+        name: 'Compras',
+        path: '/compras',
+        icon: ShoppingCart,
+        roles: ['admin'],
+      },
     ],
   },
   {
@@ -37,19 +53,42 @@ const menuGroups = [
       { name: 'Inventario', path: '/inventario', icon: Boxes },
       { name: 'Clientes', path: '/clientes', icon: Users },
       { name: 'Ventas', path: '/ventas', icon: CreditCard },
-      { name: 'Pagos', path: '/pagos', icon: CreditCard },
-      { name: 'Devoluciones', path: '/devoluciones', icon: RotateCcw },
+      { name: 'Métodos de pago', path: '/pagos', icon: CreditCard },
+      {
+        name: 'Anular ventas',
+        path: '/devoluciones',
+        icon: RotateCcw,
+        roles: ['admin'],
+      },
     ],
   },
   {
     title: 'ANÁLISIS',
     items: [
-      { name: 'Reportes', path: '/reportes', icon: ChartNoAxesCombined },
+      {
+        name: 'Alertas',
+        path: '/alertas',
+        icon: Bell,
+      },
+      {
+        name: 'Kardex',
+        path: '/kardex',
+        icon: Boxes,
+        roles: ['admin'],
+      },
+      {
+        name: 'Reportes',
+        path: '/reportes',
+        icon: ChartNoAxesCombined,
+        roles: ['admin'],
+      },
     ],
   },
 ]
 
 export default function Sidebar({ isOpen = false, onClose = () => {} }) {
+  const { hasRole } = useAuth()
+
   return (
     <>
       {isOpen && (
@@ -91,37 +130,45 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-6">
-          {menuGroups.map((group) => (
-            <div key={group.title} className="mb-7">
-              <p className="mb-3 px-3 text-[10px] font-bold tracking-[0.15em] text-slate-400">
-                {group.title}
-              </p>
+          {menuGroups.map((group) => {
+            const visibleItems = group.items.filter(
+              (item) => !item.roles || hasRole(...item.roles),
+            )
 
-              <nav className="space-y-1" aria-label={group.title}>
-                {group.items.map((item) => {
-                  const Icon = item.icon
+            if (visibleItems.length === 0) return null
 
-                  return (
-                    <NavLink
-                      key={item.path}
-                      to={item.path}
-                      onClick={onClose}
-                      className={({ isActive }) =>
-                        `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
-                          isActive
-                            ? 'bg-teal-50 text-teal-700'
-                            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                        }`
-                      }
-                    >
-                      <Icon size={18} />
-                      {item.name}
-                    </NavLink>
-                  )
-                })}
-              </nav>
-            </div>
-          ))}
+            return (
+              <div key={group.title} className="mb-7">
+                <p className="mb-3 px-3 text-[10px] font-bold tracking-[0.15em] text-slate-400">
+                  {group.title}
+                </p>
+
+                <nav className="space-y-1" aria-label={group.title}>
+                  {visibleItems.map((item) => {
+                    const Icon = item.icon
+
+                    return (
+                      <NavLink
+                        key={item.path}
+                        to={item.path}
+                        onClick={onClose}
+                        className={({ isActive }) =>
+                          `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
+                            isActive
+                              ? 'bg-teal-50 text-teal-700'
+                              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                          }`
+                        }
+                      >
+                        <Icon size={18} />
+                        {item.name}
+                      </NavLink>
+                    )
+                  })}
+                </nav>
+              </div>
+            )
+          })}
         </div>
 
         <div className="border-t border-slate-100 p-4">

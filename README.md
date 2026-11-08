@@ -48,12 +48,17 @@ Editar `.env` según el entorno.
 
 | Variable | Descripción |
 |---|---|
-| VITE_API_URL | URL base de la API REST |
-| VITE_DEMO_AUTH | Habilita autenticación demo durante desarrollo |
-| VITE_DEMO_DATA | Habilita datos locales demo durante desarrollo |
+| VITE_API_URL | URL base de la API REST, por ejemplo `http://localhost:3000` |
+| VITE_DATA_MODE | `api` para consumir la API real o `demo` para usar datos locales |
 
-La URL de la API se completará cuando se realice la integración
-con el backend.
+Para trabajar sin el backend, utiliza:
+
+```env
+VITE_API_URL=http://localhost:3000
+VITE_DATA_MODE=demo
+```
+
+Reinicia Vite después de modificar `.env`.
 
 ## Ejecución en desarrollo
 
@@ -61,17 +66,20 @@ con el backend.
 npm run dev
 ```
 
+Abre la dirección exacta que Vite muestra en la terminal. Normalmente será
+`http://localhost:5173/`; si ese puerto ya está ocupado, Vite utilizará otro.
+
 ## Acceso de demostración
 
-Con `VITE_DEMO_AUTH=true` y ejecutando la aplicación en desarrollo:
+Con `VITE_DATA_MODE=demo` y ejecutando la aplicación en desarrollo:
 
 - Correo: admin@novasalud.test
 - Contraseña: NovaSalud2026!
 
 Los datos de demostración se almacenan localmente en el navegador.
 
-El modo demo está limitado al entorno de desarrollo. No debe
-considerarse un mecanismo de autenticación para producción.
+El modo demo no debe considerarse un mecanismo de autenticación para
+producción.
 
 ## Validación y compilación
 

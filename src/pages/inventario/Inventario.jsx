@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Package,
 } from 'lucide-react'
+import { useAuth } from '../../context/useAuth'
 
 import Stock from './Stock'
 import Lotes from './Lotes'
@@ -14,12 +15,21 @@ import Alertas from './Alertas'
 const sections = [
   { id: 'stock', label: 'Stock', icon: Boxes },
   { id: 'lotes', label: 'Lotes', icon: Package },
-  { id: 'movimientos', label: 'Movimientos', icon: ClipboardList },
+  {
+    id: 'movimientos',
+    label: 'Movimientos',
+    icon: ClipboardList,
+    roles: ['admin'],
+  },
   { id: 'alertas', label: 'Alertas', icon: CalendarClock },
 ]
 
 export default function Inventario() {
   const [activeSection, setActiveSection] = useState('stock')
+  const { hasRole } = useAuth()
+  const visibleSections = sections.filter(
+    (section) => !section.roles || hasRole(...section.roles),
+  )
 
   return (
     <div className="space-y-6">
@@ -34,7 +44,7 @@ export default function Inventario() {
       </div>
 
       <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3">
-        {sections.map(({ id, label, icon: Icon }) => (
+        {visibleSections.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -53,7 +63,7 @@ export default function Inventario() {
 
       {activeSection === 'stock' && <Stock />}
       {activeSection === 'lotes' && <Lotes />}
-      {activeSection === 'movimientos' && <Movimientos />}
+      {activeSection === 'movimientos' && hasRole('admin') && <Movimientos />}
       {activeSection === 'alertas' && <Alertas />}
     </div>
   )
